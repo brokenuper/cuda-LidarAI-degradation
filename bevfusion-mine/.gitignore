@@ -1,0 +1,61 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# 编译扩展产物
+*.so
+*.o
+*.a
+*.obj
+*.dylib
+
+# ===== C++ / CMake 构建 =====
+/build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.ninja
+
+# ===== 模型权重与导出文件（体积大，不入库）=====
+/model/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.plan
+*.engine
+*.tensor
+*.pkl
+*.bin
+
+# ===== 数据与评测输出 =====
+/data/
+/example-data/
+/eval-*/
+/predictions*.pkl
+/logs/
+/runs/
+*.log
+
+# ===== 环境 / 编辑器 / 个人文件 =====
+.vscode/
+.idea/
+*.swp
+.venv/
+venv/
+.env
+.conda-*/
+result.docx
+*.docx
+
+# bevfusion 子模块内的构建残留
+bevfusion/.dist_test/
+bevfusion/mmdet3d.egg-info/
