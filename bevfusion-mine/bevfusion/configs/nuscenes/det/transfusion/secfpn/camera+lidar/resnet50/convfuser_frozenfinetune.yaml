@@ -1,0 +1,162 @@
+# ============================================================
+# Memory-friendly frozen-backbone fine-tuning on nuScenes-mini
+# Target GPU: RTX 3080 10G/12G
+#
+# Freeze the two backbones (eval + requires_grad=False):
+#   - model.encoders.camera.backbone   (ResNet50)
+#   - model.encoders.lidar.backbone    (SparseEncoder)
+# Keep the following trainable:
+#   - model.encoders.camera.neck / vtransform
+#   - model.fuser                    (ConvFuser, BEV fusion)
+#   - model.decoder                  (BEV decoder backbone + neck)
+#   - model.heads.object             (TransFusion detection head)
+#
+# Notes for nuScenes-mini (inherited from the resnet50/default.yaml chain):
+#   - no nuscenes_dbinfos_train.pkl   -> train_pipeline below drops ObjectPaste
+#   - no map expansion JSON           -> train_pipeline below drops LoadBEVSegmentation
+#   - 128x352 camera (image_size)     -> fits 10G VRAM (fp16, batch 1)
+# ============================================================
+
+# ---- frozen modules (consumed by tools/train.py + mmdet3d/apis/train.py) ----
+# NOTE: key named "freeze_modules" (not "freeze") because mmcv.ConfigDict has a
+# .freeze() method that would shadow attribute access.
+freeze_modules:
+  - encoders.camera.backbone
+  - encoders.lidar.backbone
+
+# ---- BEV fusion module (normally defined in convfuser.yaml, which is a
+# separate entry config not loaded recursively; keep it here so this config is
+# self-contained) ----
+model:
+  fuser:
+    type: ConvFuser
+    in_channels: [80, 256]
+    out_channels: 256
+    
+# fine-tune from the full BEVFusion detection checkpoint
+load_from: /home/scut/CX/Lidar_AI_Solution/CUDA-BEVFusion/model/resnet50/bevfusion-det.pth
+resume_from: null
+
+# ---- nuScenes-mini ----
+dataset_root: /home/scut/CX/Lidar_AI_Solution/dataset/nuScenes-mini/
+
+# ---- training budget / hardware ----
+max_epochs: 5
+image_size: [128, 352]
+
+data:
+  samples_per_gpu: 2
+  workers_per_gpu: 2
+
+optimizer:
+  type: AdamW
+  lr: 2.0e-4
+  weight_decay: 0.01
+
+optimizer_config:
+  grad_clip:
+    max_norm: 35
+    norm_type: 2
+
+lr_config:
+  policy: CosineAnnealing
+  warmup: linear
+  warmup_iters: 200
+  warmup_ratio: 0.33333333
+  min_lr_ratio: 1.0e-3
+
+# TextLoggerHook only: avoids `torch.utils.tensorboard`/distutils crash at
+# before_run in this env (irrelevant to training itself).
+log_config:
+  interval: 50
+  hooks:
+    -
+      type: TextLoggerHook
+
+# ---- mini train pipeline: no ObjectPaste, no LoadBEVSegmentation ----
+train_pipeline:
+  -
+    type: LoadMultiViewImageFromFiles
+    to_float32: true
+  -
+    type: LoadPointsFromFile
+    coord_type: LIDAR
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    load_augmented: ${load_augmented}
+  -
+    type: LoadPointsFromMultiSweeps
+    sweeps_num: 9
+    load_dim: ${load_dim}
+    use_dim: ${use_dim}
+    reduce_beams: ${reduce_beams}
+    pad_empty_sweeps: true
+    remove_close: true
+    load_augmented: ${load_augmented}
+  -
+    type: LoadAnnotations3D
+    with_bbox_3d: true
+    with_label_3d: true
+    with_attr_label: False
+  -
+    type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: ${augment2d.resize[0]}
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: ${augment2d.rotate}
+    rand_flip: true
+    is_train: true
+  -
+    type: GlobalRotScaleTrans
+    resize_lim: ${augment3d.scale}
+    rot_lim: ${augment3d.rotate}
+    trans_lim: ${augment3d.translate}
+    is_train: true
+  -
+    type: RandomFlip3D
+  -
+    type: PointsRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: ObjectRangeFilter
+    point_cloud_range: ${point_cloud_range}
+  -
+    type: ObjectNameFilter
+    classes: ${object_classes}
+  -
+    type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  -
+    type: GridMask
+    use_h: true
+    use_w: true
+    max_epoch: ${max_epochs}
+    rotate: 1
+    offset: false
+    ratio: 0.5
+    mode: 1
+    prob: ${augment2d.gridmask.prob}
+    fixed_prob: ${augment2d.gridmask.fixed_prob}
+  -
+    type: PointShuffle
+  -
+    type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  -
+    type: Collect3D
+    keys:
+      - img
+      - points
+      - gt_bboxes_3d
+      - gt_labels_3d
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
